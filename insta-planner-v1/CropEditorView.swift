@@ -308,7 +308,7 @@ final class PhotoLibraryBrowser {
             PhotoLibraryAsset(id: $0.localIdentifier, asset: $0, thumbnail: nil)
         }
         assets = Array(fetched)
-        for item in assets.prefix(40) {
+        for item in assets {
             if let image = await thumbnail(for: item.asset), let index = assets.firstIndex(where: { $0.id == item.id }) {
                 assets[index].thumbnail = image
             }
