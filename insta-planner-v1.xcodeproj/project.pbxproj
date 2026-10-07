@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		0FEB74D23073A85C00D0F9E7 /* insta-planner-v1.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "insta-planner-v1.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		0FEB74D23073A85C00D0F9E7 /* Feedomator .app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Feedomator .app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -40,7 +40,7 @@
 		0FEB74D33073A85C00D0F9E7 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				0FEB74D23073A85C00D0F9E7 /* insta-planner-v1.app */,
+				0FEB74D23073A85C00D0F9E7 /* Feedomator .app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -67,7 +67,7 @@
 			packageProductDependencies = (
 			);
 			productName = "insta-planner-v1";
-			productReference = 0FEB74D23073A85C00D0F9E7 /* insta-planner-v1.app */;
+			productReference = 0FEB74D23073A85C00D0F9E7 /* Feedomator .app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -271,7 +271,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.7;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "ArtemCO.insta-planner-v1";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Feedomator ";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -318,7 +318,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 15.7;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "ArtemCO.insta-planner-v1";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Feedomator ";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;

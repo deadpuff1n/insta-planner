@@ -32,10 +32,19 @@ struct FeedGridView: View {
     @State private var library = PhotoLibraryBrowser()
     @State private var selectedAssetID: PhotoLibraryAsset.ID?
     @State private var suppressNextGallerySelection = false
+    @State private var galleryExpanded = false
+    @State private var undoStack: [FeedStateChange] = []
+    @State private var redoStack: [FeedStateChange] = []
+    @State private var cropStartState: FeedState?
     @State private var syncing = false
     @State private var error: String?
 
     private let cols = Array(repeating: GridItem(.flexible(), spacing: 1), count: 3)
+    private let historyLimit = 30
+
+    private var canUndo: Bool { undoStack.isEmpty == false }
+
+    private var canRedo: Bool { redoStack.isEmpty == false }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -53,7 +62,7 @@ struct FeedGridView: View {
             }
 
             if selectedPost?.isDraft == true {
-                mainGalleryStrip
+                bottomGalleryControls
                     .id("\(selectedPost?.id.uuidString ?? "")-\(library.selectedAlbumID ?? "")")
             }
         }
@@ -81,10 +90,6 @@ struct FeedGridView: View {
                 suppressNextGallerySelection = false
                 return
             }
-            if let selectedPost {
-                selectedPost.sourceAssetID = id
-                selectedPost.sourceAlbumID = library.selectedAlbumID
-            }
             Task { await replaceSelectedPhoto(with: asset) }
         }
         .sheet(item: $editing) { post in
@@ -98,38 +103,77 @@ struct FeedGridView: View {
         } message: { Text(error ?? "") }
     }
 
+    private var bottomGalleryControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Button { undoPhotoChange() } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .disabled(!canUndo)
+                .accessibilityLabel("Отменить")
+
+                Button { redoPhotoChange() } label: {
+                    Image(systemName: "arrow.uturn.forward")
+                }
+                .disabled(!canRedo)
+                .accessibilityLabel("Вернуть")
+            }
+            .font(.headline)
+            .foregroundStyle(.white)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .padding(.leading, 12)
+
+            mainGalleryStrip
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var mainGalleryStrip: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Menu {
-                ForEach(library.albums) { album in
-                    Button(album.title) {
-                        Task {
-                            await library.select(album)
-                            selectedPost?.sourceAlbumID = album.id
-                            setGalleryPosition(restoredAssetID())
+            Capsule()
+                .fill(.white.opacity(0.35))
+                .frame(width: 44, height: 5)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 2)
+                .gesture(galleryExpansionGesture)
+
+            HStack(spacing: 10) {
+                Menu {
+                    ForEach(library.albums) { album in
+                        Button(album.title) {
+                            Task {
+                                await library.select(album)
+                                selectedPost?.sourceAlbumID = album.id
+                                setGalleryPosition(restoredAssetID())
+                            }
                         }
                     }
+                } label: {
+                    Label(library.selectedAlbum?.title ?? "Недавние", systemImage: "rectangle.stack")
                 }
-            } label: {
-                Label(library.selectedAlbum?.title ?? "Недавние", systemImage: "rectangle.stack")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(.white.opacity(0.14), in: Capsule())
             }
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.white)
+            .labelStyle(.titleAndIcon)
             .padding(.horizontal, 16)
 
-            GalleryCarouselView(assets: library.assets, selectedID: $selectedAssetID)
-                .frame(maxWidth: .infinity)
-                .frame(height: 72)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(.white, lineWidth: 3)
-                        .frame(width: 64, height: 64)
-                        .allowsHitTesting(false)
-                }
+            if galleryExpanded {
+                expandedGalleryGrid
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else {
+                GalleryCarouselView(assets: library.assets, selectedID: $selectedAssetID)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 80)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(.white, lineWidth: 3)
+                            .frame(width: 54, height: 72)
+                            .allowsHitTesting(false)
+                    }
+            }
         }
+        .buttonStyle(.plain)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity)
         .background(.black.opacity(0.92))
@@ -147,6 +191,46 @@ struct FeedGridView: View {
         }
     }
 
+    private var galleryExpansionGesture: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onEnded { value in
+                if value.translation.height < -35 {
+                    withAnimation(.snappy) { galleryExpanded = true }
+                } else if value.translation.height > 35 {
+                    withAnimation(.snappy) { galleryExpanded = false }
+                }
+            }
+    }
+
+    private var expandedGalleryGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 5), spacing: 5) {
+                ForEach(library.assets) { asset in
+                    Button { chooseGalleryAsset(asset) } label: {
+                        if let thumb = asset.thumbnail {
+                            Image(uiImage: thumb)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Rectangle().fill(.white.opacity(0.18))
+                        }
+                    }
+                    .aspectRatio(3.0 / 4.0, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay {
+                        if selectedAssetID == asset.id {
+                            RoundedRectangle(cornerRadius: 6).stroke(.white, lineWidth: 3)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+        }
+        .frame(height: 340)
+    }
+
     private func cell(_ post: FeedPost) -> some View {
         Color.clear
             .aspectRatio(FeedLayout.cellAspect, contentMode: .fit)
@@ -156,8 +240,12 @@ struct FeedGridView: View {
                     GeometryReader { geo in
                         TwoFingerCropOverlay {
                             select(post)
+                        } onBegin: {
+                            beginCropHistory()
                         } onChange: { magnificationDelta, translationDelta in
                             crop(post, imageSize: img.size, frame: geo.size, magnificationDelta: magnificationDelta, translationDelta: translationDelta)
+                        } onEnd: {
+                            finishCropHistory()
                         }
                     }
                 }
@@ -227,10 +315,12 @@ struct FeedGridView: View {
             selectedRemotePost = nil
             return
         }
+        let before = currentFeedState()
         let firstOrder = first.order
         first.order = post.order
         post.order = firstOrder
         normalizeOrder()
+        recordFeedChange(from: before, to: currentFeedState())
         selectedRemotePost = nil
     }
 
@@ -263,6 +353,12 @@ struct FeedGridView: View {
         }
     }
 
+    private func chooseGalleryAsset(_ asset: PhotoLibraryAsset) {
+        suppressNextGallerySelection = true
+        selectedAssetID = asset.id
+        Task { await replaceSelectedPhoto(with: asset) }
+    }
+
     private func delete(_ p: FeedPost) {
         if selectedPost?.id == p.id { selectedPost = nil }
         if selectedRemotePost?.id == p.id { selectedRemotePost = nil }
@@ -276,12 +372,14 @@ struct FeedGridView: View {
         guard let from = posts.firstIndex(where: { $0.id == dragged.id }),
               let to = posts.firstIndex(where: { $0.id == target.id }),
               from != to else { return }
+        let before = currentFeedState()
         withAnimation(.snappy) {
             posts.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
             for (index, post) in posts.enumerated() {
                 post.order = index
             }
         }
+        recordFeedChange(from: before, to: currentFeedState())
     }
 
     private func normalizeOrder() {
@@ -290,15 +388,16 @@ struct FeedGridView: View {
         }
     }
 
-    private func replaceSelectedPhoto(with asset: PhotoLibraryAsset) async {
+    private func replaceSelectedPhoto(with asset: PhotoLibraryAsset, recordsHistory: Bool = true) async {
         guard let post = selectedPost, post.isDraft else { return }
+        if post.sourceAssetID == asset.id { return }
         do {
+            let before = currentFeedState()
             let selection = try await library.imageData(for: asset)
             guard let file = ImageStore.save(selection.data) else {
                 error = "Не удалось сохранить выбранное фото"
                 return
             }
-            ImageStore.delete(post.imageFile)
             post.imageFile = file
             post.sourceFilename = selection.filename
             post.sourceAssetID = asset.id
@@ -306,9 +405,71 @@ struct FeedGridView: View {
             post.cropScale = 1
             post.cropX = 0
             post.cropY = 0
+            if recordsHistory {
+                recordFeedChange(from: before, to: currentFeedState())
+            }
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    private func undoPhotoChange() {
+        guard let change = undoStack.popLast() else { return }
+        apply(change.before)
+        redoStack.append(change)
+    }
+
+    private func redoPhotoChange() {
+        guard let change = redoStack.popLast() else { return }
+        apply(change.after)
+        undoStack.append(change)
+    }
+
+    private func recordFeedChange(from before: FeedState, to after: FeedState) {
+        guard before != after else { return }
+        undoStack.append(FeedStateChange(before: before, after: after))
+        if undoStack.count > historyLimit {
+            undoStack.removeFirst(undoStack.count - historyLimit)
+        }
+        redoStack = []
+    }
+
+    private func currentFeedState() -> FeedState {
+        FeedState(posts: account.sortedPosts)
+    }
+
+    private func apply(_ state: FeedState) {
+        for postState in state.posts {
+            apply(postState)
+        }
+    }
+
+    private func apply(_ state: FeedPostState) {
+        let post = state.post
+        post.order = state.order
+        post.imageFile = state.imageFile
+        post.sourceFilename = state.sourceFilename
+        post.sourceAssetID = state.sourceAssetID
+        post.sourceAlbumID = state.sourceAlbumID
+        post.cropScale = state.cropScale
+        post.cropX = state.cropX
+        post.cropY = state.cropY
+        if selectedPost?.id == post.id {
+            suppressNextGallerySelection = true
+            selectedAssetID = state.sourceAssetID
+        }
+    }
+
+    private func beginCropHistory() {
+        if cropStartState == nil {
+            cropStartState = currentFeedState()
+        }
+    }
+
+    private func finishCropHistory() {
+        guard let before = cropStartState else { return }
+        cropStartState = nil
+        recordFeedChange(from: before, to: currentFeedState())
     }
 
     private func crop(_ post: FeedPost, imageSize: CGSize, frame: CGSize, magnificationDelta: CGFloat, translationDelta: CGPoint) {
@@ -378,6 +539,57 @@ struct FeedGridView: View {
     }
 }
 
+struct FeedState: Equatable {
+    let posts: [FeedPostState]
+
+    @MainActor init(posts: [FeedPost]) {
+        self.posts = posts.map(FeedPostState.init)
+    }
+}
+
+struct FeedPostState: Equatable {
+    let post: FeedPost
+    let id: UUID
+    let order: Int
+    let imageFile: String
+    let sourceFilename: String?
+    let sourceAssetID: String?
+    let sourceAlbumID: String?
+    let cropScale: Double
+    let cropX: Double
+    let cropY: Double
+
+    init(post: FeedPost) {
+        self.post = post
+        id = post.id
+        order = post.order
+        imageFile = post.imageFile
+        sourceFilename = post.sourceFilename
+        sourceAssetID = post.sourceAssetID
+        sourceAlbumID = post.sourceAlbumID
+        cropScale = post.cropScale
+        cropX = post.cropX
+        cropY = post.cropY
+    }
+
+    static func == (lhs: FeedPostState, rhs: FeedPostState) -> Bool {
+        lhs.id == rhs.id &&
+        lhs.order == rhs.order &&
+        lhs.imageFile == rhs.imageFile &&
+        lhs.sourceFilename == rhs.sourceFilename &&
+        lhs.sourceAssetID == rhs.sourceAssetID &&
+        lhs.sourceAlbumID == rhs.sourceAlbumID &&
+        lhs.cropScale == rhs.cropScale &&
+        lhs.cropX == rhs.cropX &&
+        lhs.cropY == rhs.cropY
+    }
+}
+
+struct FeedStateChange {
+    let before: FeedState
+    let after: FeedState
+}
+
 struct FeedReorderDelegate: DropDelegate {
     let target: FeedPost
     @Binding var dragged: FeedPost?
@@ -402,21 +614,27 @@ struct GalleryCarouselView: UIViewRepresentable {
     let assets: [PhotoLibraryAsset]
     @Binding var selectedID: PhotoLibraryAsset.ID?
 
-    private let itemSize: CGFloat = 64
+    private let itemWidth: CGFloat = 54
+    private let itemHeight: CGFloat = 72
     private let spacing: CGFloat = 10
 
     func makeUIView(context: Context) -> UIScrollView {
         let scrollView = UIScrollView()
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.alwaysBounceHorizontal = true
-        scrollView.decelerationRate = .fast
+        scrollView.decelerationRate = .normal
         scrollView.delegate = context.coordinator
         return scrollView
     }
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
         context.coordinator.parent = self
-        rebuild(scrollView, coordinator: context.coordinator)
+        let coordinator = context.coordinator
+        rebuild(scrollView, coordinator: coordinator)
+        DispatchQueue.main.async {
+            coordinator.parent = self
+            rebuild(scrollView, coordinator: coordinator)
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -427,15 +645,15 @@ struct GalleryCarouselView: UIViewRepresentable {
         let ids = assets.map(\.id)
         let boundsWidth = scrollView.bounds.width
         guard boundsWidth > 0 else { return }
-        let sideInset = max(0, (boundsWidth - itemSize) / 2)
-        let contentWidth = sideInset * 2 + CGFloat(assets.count) * itemSize + CGFloat(max(0, assets.count - 1)) * spacing
+        let sideInset = max(0, (boundsWidth - itemWidth) / 2)
+        let contentWidth = sideInset * 2 + CGFloat(assets.count) * itemWidth + CGFloat(max(0, assets.count - 1)) * spacing
 
         if coordinator.renderedIDs != ids || abs(coordinator.renderedWidth - boundsWidth) > 0.5 {
             scrollView.subviews.forEach { $0.removeFromSuperview() }
             scrollView.contentInset = .zero
-            scrollView.contentSize = CGSize(width: contentWidth, height: itemSize)
+            scrollView.contentSize = CGSize(width: contentWidth, height: itemHeight)
             for (index, asset) in assets.enumerated() {
-                let frame = CGRect(x: sideInset + CGFloat(index) * (itemSize + spacing), y: 4, width: itemSize, height: itemSize)
+                let frame = CGRect(x: sideInset + CGFloat(index) * (itemWidth + spacing), y: 4, width: itemWidth, height: itemHeight)
                 let imageView = UIImageView(frame: frame)
                 imageView.image = asset.thumbnail
                 imageView.backgroundColor = UIColor.white.withAlphaComponent(0.18)
@@ -463,6 +681,7 @@ struct GalleryCarouselView: UIViewRepresentable {
         var renderedWidth: CGFloat = 0
         var isUserScrolling = false
         private var dragStartIndex = 0
+        private var pendingSelectionIndex: Int?
 
         init(parent: GalleryCarouselView) {
             self.parent = parent
@@ -486,36 +705,51 @@ struct GalleryCarouselView: UIViewRepresentable {
             if !decelerate { finishScrolling(scrollView) }
         }
 
+        func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+            commitPendingSelection()
+        }
+
         private func finishScrolling(_ scrollView: UIScrollView) {
             let index = nearestIndex(for: scrollView.contentOffset.x, in: scrollView)
-            center(index: index, in: scrollView, animated: true)
-            if parent.assets.indices.contains(index) {
-                parent.selectedID = parent.assets[index].id
-            }
+            let targetOffset = centeredOffset(for: index, in: scrollView)
+            pendingSelectionIndex = index
             dragStartIndex = index
             isUserScrolling = false
+            if abs(scrollView.contentOffset.x - targetOffset) < 0.5 {
+                commitPendingSelection()
+            } else {
+                scrollView.setContentOffset(CGPoint(x: targetOffset, y: 0), animated: true)
+            }
         }
 
         func center(index: Int, in scrollView: UIScrollView, animated: Bool) {
             scrollView.setContentOffset(CGPoint(x: centeredOffset(for: index, in: scrollView), y: 0), animated: animated)
         }
 
+        private func commitPendingSelection() {
+            guard let index = pendingSelectionIndex else { return }
+            pendingSelectionIndex = nil
+            if parent.assets.indices.contains(index) {
+                parent.selectedID = parent.assets[index].id
+            }
+        }
+
         private func nearestIndex(for offsetX: CGFloat, in scrollView: UIScrollView) -> Int {
             guard !parent.assets.isEmpty else { return 0 }
             let centerX = offsetX + scrollView.bounds.width / 2
-            let sideInset = max(0, (scrollView.bounds.width - parent.itemSize) / 2)
-            let raw = (centerX - sideInset - parent.itemSize / 2) / (parent.itemSize + parent.spacing)
+            let sideInset = max(0, (scrollView.bounds.width - parent.itemWidth) / 2)
+            let raw = (centerX - sideInset - parent.itemWidth / 2) / (parent.itemWidth + parent.spacing)
             return clampedIndex(Int(round(raw)))
         }
 
         private func targetIndex(for proposedOffsetX: CGFloat, velocityX: CGFloat, in scrollView: UIScrollView) -> Int {
             guard !parent.assets.isEmpty else { return 0 }
-            let step = parent.itemSize + parent.spacing
+            let step = parent.itemWidth + parent.spacing
             let delta = proposedOffsetX - centeredOffset(for: dragStartIndex, in: scrollView)
-            if velocityX > 0.12 || delta > step * 0.18 {
+            if velocityX > 0.35 || delta > step * 0.35 {
                 return clampedIndex(dragStartIndex + 1)
             }
-            if velocityX < -0.12 || delta < -step * 0.18 {
+            if velocityX < -0.35 || delta < -step * 0.35 {
                 return clampedIndex(dragStartIndex - 1)
             }
             return dragStartIndex
@@ -526,8 +760,8 @@ struct GalleryCarouselView: UIViewRepresentable {
         }
 
         private func centeredOffset(for index: Int, in scrollView: UIScrollView) -> CGFloat {
-            let sideInset = max(0, (scrollView.bounds.width - parent.itemSize) / 2)
-            let itemCenter = sideInset + CGFloat(index) * (parent.itemSize + parent.spacing) + parent.itemSize / 2
+            let sideInset = max(0, (scrollView.bounds.width - parent.itemWidth) / 2)
+            let itemCenter = sideInset + CGFloat(index) * (parent.itemWidth + parent.spacing) + parent.itemWidth / 2
             let maxOffset = max(0, scrollView.contentSize.width - scrollView.bounds.width)
             return min(max(itemCenter - scrollView.bounds.width / 2, 0), maxOffset)
         }
@@ -536,7 +770,9 @@ struct GalleryCarouselView: UIViewRepresentable {
 
 struct TwoFingerCropOverlay: UIViewRepresentable {
     var onTap: () -> Void
+    var onBegin: () -> Void
     var onChange: (CGFloat, CGPoint) -> Void
+    var onEnd: () -> Void
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
@@ -564,22 +800,28 @@ struct TwoFingerCropOverlay: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.onTap = onTap
+        context.coordinator.onBegin = onBegin
         context.coordinator.onChange = onChange
+        context.coordinator.onEnd = onEnd
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onTap: onTap, onChange: onChange)
+        Coordinator(onTap: onTap, onBegin: onBegin, onChange: onChange, onEnd: onEnd)
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onTap: () -> Void
+        var onBegin: () -> Void
         var onChange: (CGFloat, CGPoint) -> Void
+        var onEnd: () -> Void
         private var lastPanTranslation = CGPoint.zero
         private var lastPinchScale: CGFloat = 1
 
-        init(onTap: @escaping () -> Void, onChange: @escaping (CGFloat, CGPoint) -> Void) {
+        init(onTap: @escaping () -> Void, onBegin: @escaping () -> Void, onChange: @escaping (CGFloat, CGPoint) -> Void, onEnd: @escaping () -> Void) {
             self.onTap = onTap
+            self.onBegin = onBegin
             self.onChange = onChange
+            self.onEnd = onEnd
         }
 
         @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
@@ -590,10 +832,14 @@ struct TwoFingerCropOverlay: UIViewRepresentable {
             switch recognizer.state {
             case .began:
                 lastPinchScale = recognizer.scale
+                onBegin()
             case .changed:
                 let delta = recognizer.scale / lastPinchScale
                 lastPinchScale = recognizer.scale
                 onChange(delta, .zero)
+            case .ended, .cancelled, .failed:
+                lastPinchScale = 1
+                onEnd()
             default:
                 lastPinchScale = 1
             }
@@ -604,10 +850,14 @@ struct TwoFingerCropOverlay: UIViewRepresentable {
             switch recognizer.state {
             case .began:
                 lastPanTranslation = translation
+                onBegin()
             case .changed:
                 let delta = CGPoint(x: translation.x - lastPanTranslation.x, y: translation.y - lastPanTranslation.y)
                 lastPanTranslation = translation
                 onChange(1, delta)
+            case .ended, .cancelled, .failed:
+                lastPanTranslation = .zero
+                onEnd()
             default:
                 lastPanTranslation = .zero
             }
